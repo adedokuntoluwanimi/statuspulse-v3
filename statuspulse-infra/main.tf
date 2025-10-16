@@ -1,4 +1,11 @@
 ############################################
+# AWS Provider
+############################################
+provider "aws" {
+  region = "us-east-1"
+}
+
+############################################
 # AMI: Latest Ubuntu 22.04 LTS for region
 ############################################
 data "aws_ami" "ubuntu_2204" {
@@ -23,19 +30,30 @@ resource "aws_key_pair" "this" {
   public_key = tls_private_key.ssh.public_key_openssh
 }
 
-# Save private key to local file with safe permissions
+# Save private key to local file with correct permissions
 resource "local_file" "private_key_pem" {
   filename        = "${path.module}/${var.instance_name}.pem"
-  content         = tls_private_key.ssh.private_key_openssh
+  content         = tls_private_key.ssh.private_key_pem
   file_permission = "0400"
 }
 
 ############################################
 # Security group
 ############################################
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
 resource "aws_security_group" "this" {
   name        = "${var.instance_name}-sg"
-  description = "SG for StatusPulse host"
+  description = "Security group for StatusPulse EC2"
   vpc_id      = data.aws_vpc.default.id
 
   # SSH
@@ -46,7 +64,7 @@ resource "aws_security_group" "this" {
     cidr_blocks = [var.allow_ssh_cidr]
   }
 
-  # Frontend (Nginx)
+  # Frontend (Next.js)
   ingress {
     from_port   = 3000
     to_port     = 3000
@@ -62,7 +80,7 @@ resource "aws_security_group" "this" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # HTTP (optional, if you later expose on 80)
+  # HTTP
   ingress {
     from_port   = 80
     to_port     = 80
@@ -70,7 +88,15 @@ resource "aws_security_group" "this" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Egress all
+  # Jenkins (optional)
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Outbound traffic
   egress {
     from_port   = 0
     to_port     = 0
@@ -83,27 +109,14 @@ resource "aws_security_group" "this" {
   }
 }
 
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
 ############################################
-# User data: docker + docker compose
-# (We’ll deploy app in the next step)
+# User data: install Docker + Docker Compose
 ############################################
 locals {
   user_data = <<-EOT
     #!/bin/bash
     set -eux
 
-    # Update and install docker
     apt-get update -y
     apt-get install -y ca-certificates curl gnupg lsb-release
 
@@ -119,20 +132,18 @@ locals {
     apt-get update -y
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-    # Enable and start docker
     systemctl enable docker
     systemctl start docker
 
-    # Create data dir and app dir
     mkdir -p /opt/statuspulse/data
     chown ubuntu:ubuntu /opt/statuspulse -R || true
 
-    # Open firewall if UFW is present (Ubuntu images often disable ufw, harmless if missing)
     if command -v ufw >/dev/null 2>&1; then
       ufw allow 22/tcp || true
       ufw allow 80/tcp || true
       ufw allow 3000/tcp || true
       ufw allow 8081/tcp || true
+      ufw allow 8080/tcp || true
     fi
   EOT
 }
@@ -145,17 +156,35 @@ resource "aws_instance" "this" {
   instance_type               = var.instance_type
   key_name                    = aws_key_pair.this.key_name
   vpc_security_group_ids      = [aws_security_group.this.id]
-  subnet_id                   = data.aws_subnets.default.ids[0] # first subnet in default VPC
+  subnet_id                   = data.aws_subnets.default.ids[0]
   associate_public_ip_address = true
   user_data                   = local.user_data
 
   root_block_device {
-    volume_size = var.disk_size_gb
-    volume_type = "gp3"
-    encrypted   = true
+    volume_size           = var.disk_size_gb
+    volume_type           = "gp3"
+    delete_on_termination = false # keeps EBS volume even if destroyed
+    encrypted             = true
   }
 
   tags = {
     Name = var.instance_name
   }
 }
+
+############################################
+# Outputs
+############################################
+output "instance_public_ip" {
+  value = aws_instance.this.public_ip
+}
+
+output "ssh_command" {
+  value = "ssh -i ./${var.instance_name}.pem ubuntu@${aws_instance.this.public_ip}"
+}
+
+output "ssh_private_key_path" {
+  value     = local_file.private_key_pem.filename
+  sensitive = true
+}
+
