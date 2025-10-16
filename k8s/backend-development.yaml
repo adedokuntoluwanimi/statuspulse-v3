@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: statuspulse-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: statuspulse-backend
+  template:
+    metadata:
+      labels:
+        app: statuspulse-backend
+    spec:
+      containers:
+        - name: backend
+          image: adedokuntoluwanimi/statuspulse-backend:latest
+          ports:
+            - containerPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: statuspulse-backend
+spec:
+  selector:
+    app: statuspulse-backend
+  ports:
+    - port: 8081
+      targetPort: 8000
+  type: ClusterIP
