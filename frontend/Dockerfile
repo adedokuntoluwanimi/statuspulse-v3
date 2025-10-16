@@ -2,13 +2,22 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Only copy package metadata first (for caching)
+# Copy package metadata first (better caching)
 COPY package*.json ./
-RUN npm ci --omit=dev
 
-# Copy source and build static export
+# Install dependencies (using ci for clean reproducible builds)
+RUN npm ci
+
+# Copy app source
 COPY . .
-RUN npm run build && npm run export
+
+# Environment tweaks to avoid memory and telemetry issues
+ENV NEXT_TELEMETRY_DISABLED 1
+ENV NODE_OPTIONS="--max-old-space-size=2048"
+
+# Build and export static Next.js site
+RUN npm run build || (cat /root/.npm/_logs/* && false)
+RUN npm run export || (cat /root/.npm/_logs/* && false)
 
 # ---------- RUNTIME STAGE ----------
 FROM nginx:1.27-alpine
@@ -18,7 +27,7 @@ WORKDIR /usr/share/nginx/html
 RUN rm -rf ./*
 COPY --from=builder /app/out .
 
-# Minimal nginx config: serve static + proxy /api to backend
+# Minimal nginx config
 RUN printf 'server {\n\
     listen 80;\n\
     server_name localhost;\n\
@@ -34,3 +43,4 @@ RUN printf 'server {\n\
 
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
+
