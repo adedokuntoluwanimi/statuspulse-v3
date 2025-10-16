@@ -2,38 +2,29 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Copy package metadata first (better caching)
+# Copy package metadata first for caching
 COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Install dependencies (using ci for clean reproducible builds)
-RUN npm ci
-
-# Copy app source
+# Copy the rest and build
 COPY . .
-
-# Environment tweaks to avoid memory and telemetry issues
-ENV NEXT_TELEMETRY_DISABLED 1
+ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_OPTIONS="--max-old-space-size=2048"
-
-# Build and export static Next.js site
-RUN npm run build || (cat /root/.npm/_logs/* && false)
-RUN npm run export || (cat /root/.npm/_logs/* && false)
+RUN npm run build
 
 # ---------- RUNTIME STAGE ----------
 FROM nginx:1.27-alpine
 WORKDIR /usr/share/nginx/html
 
-# Clean default files and copy build output
 RUN rm -rf ./*
 COPY --from=builder /app/out .
 
-# Minimal nginx config
 RUN printf 'server {\n\
     listen 80;\n\
     server_name localhost;\n\
 \n\
     location /api/ {\n\
-        proxy_pass http://backend:8000/;\n\
+        proxy_pass http://backend:8081/;\n\
     }\n\
 \n\
     location / {\n\
