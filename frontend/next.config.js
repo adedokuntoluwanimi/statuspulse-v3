@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: "standalone",
+  output: "export",
   reactStrictMode: true,
   async rewrites() {
     const target = process.env.NEXT_PUBLIC_API_URL ?? "http://backend:8000";
